@@ -5,9 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/goccy/go-json"
-	"github.com/joho/godotenv"
-	"github.com/valyala/fastjson"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +12,10 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/goccy/go-json"
+	"github.com/joho/godotenv"
+	"github.com/valyala/fastjson"
 )
 
 var (
@@ -111,7 +112,7 @@ func main() {
 		}
 	}
 
-	if time.Now().Sub(time.Unix(lastRead, 0)) < time.Minute*15 {
+	if time.Since(time.Unix(lastRead, 0)) < time.Minute*15 {
 		fmt.Println("Too soon since the last request; doing nothing")
 		return
 	}
@@ -181,7 +182,7 @@ func main() {
 				))
 			}
 			if day.Part2 != nil && lastMember.CompletionDayLevel[idx].Part2 == nil {
-				completionTime := time.Unix(day.Part1.GetStarTimestamp, 0).In(ChicagoTimeZone).Format("3:04:05pm")
+				completionTime := time.Unix(day.Part2.GetStarTimestamp, 0).In(ChicagoTimeZone).Format("3:04:05pm")
 				rank := getCompletionRank(&leaderboard, &member, idx, 2) + 1
 				ordinal := getOrdinal(rank)
 				sendNotification(fmt.Sprintf(
