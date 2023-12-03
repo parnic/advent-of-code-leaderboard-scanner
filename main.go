@@ -174,18 +174,24 @@ func main() {
 			}
 
 			for dayIdx, day := range member.CompletionDayLevel {
-				totalStars := getTotalStars(&member)
-				totalStarsPlural := "s"
-				if totalStars == 1 {
-					totalStarsPlural = ""
-				}
-
 				s := func(part *completionPartData, partNum int) {
+					// in case we get two updates at once, this prevents us from saying the same number of total stars for both parts.
+					// it's never possible to have part2 completed before part 1 for a day, so this is all we need to check.
+					skipPart2OfDay := -1
+					if partNum == 1 {
+						skipPart2OfDay = dayIdx
+					}
+					totalStars := getTotalStars(&member, skipPart2OfDay)
+					totalStarsPlural := "s"
+					if totalStars == 1 {
+						totalStarsPlural = ""
+					}
+
 					completionTime := time.Unix(part.GotStarAt, 0).In(ChicagoTimeZone).Format("3:04:05pm")
 					rank := getCompletionRank(&leaderboard, &member, dayIdx, partNum) + 1
 					ordinal := getOrdinal(rank)
 					err := sendNotification(fmt.Sprintf(
-						":tada: %s completed day %d part %d %d%s on [the leaderboard](https://adventofcode.com/%s/leaderboard/private/view/%s) at %s! %s now has %d star%s on the year. :tada:",
+						":tada: %s completed day %d part %d %d%s on [the leaderboard](https://adventofcode.com/%s/leaderboard/private/view/%s) at %s, and now has %d star%s on the year. :tada:",
 						member.Name,
 						dayIdx+1,
 						partNum,
@@ -194,7 +200,6 @@ func main() {
 						*yearArg,
 						leaderboardID,
 						completionTime,
-						member.Name,
 						totalStars,
 						totalStarsPlural,
 					))
@@ -225,13 +230,13 @@ func main() {
 	fmt.Println("Shutting down.")
 }
 
-func getTotalStars(member *memberData) int {
+func getTotalStars(member *memberData, skipPart2OfDay int) int {
 	total := 0
-	for _, day := range member.CompletionDayLevel {
+	for dayIdx, day := range member.CompletionDayLevel {
 		if day.Part1 != nil {
 			total++
 		}
-		if day.Part2 != nil {
+		if day.Part2 != nil && skipPart2OfDay != dayIdx {
 			total++
 		}
 	}
