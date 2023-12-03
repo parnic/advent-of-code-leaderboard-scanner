@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/goccy/go-json"
 	"github.com/joho/godotenv"
+	"github.com/robfig/cron/v3"
 	"github.com/valyala/fastjson"
 )
 
@@ -34,8 +37,8 @@ var (
 )
 
 type completionPartData struct {
-	GetStarTimestamp int64 `json:"get_star_ts"`
-	StarIndex        int64 `json:"star_index"`
+	GotStarAt int64 `json:"get_star_ts"`
+	StarIndex int64 `json:"star_index"`
 }
 
 type completionDayData struct {
@@ -50,17 +53,20 @@ type memberData struct {
 	LocalScore         int                 `json:"local_score"`
 	GlobalScore        int                 `json:"global_score"`
 	Stars              int                 `json:"stars"`
-	LastStarTs         int                 `json:"last_star_ts"`
+	LastStarTimestamp  int                 `json:"last_star_ts"`
 }
 
 type leaderboardData struct {
 	Event   string       `json:"event"`
 	Members []memberData `json:"-"`
-	OwnerId int          `json:"owner_id"`
+	OwnerID int          `json:"owner_id"`
 }
 
 func main() {
 	flag.Parse()
+
+	fmt.Println("Started AOC leaderboard scanner.")
+
 	dotenvErr := godotenv.Load()
 	if dotenvErr != nil {
 		log.Fatal("Error loading .env file")
@@ -112,95 +118,105 @@ func main() {
 		}
 	}
 
-	if time.Since(time.Unix(lastRead, 0)) < time.Minute*15 {
-		fmt.Println("Too soon since the last request; doing nothing")
-		return
-	}
-	currBody := lastBody
+	refresh := func() {
+		fmt.Println("Scanning for new leaderboard data...")
 
-	currBody, downloadErr := downloadLeaderboardData(*yearArg, leaderboardID, session)
-	if downloadErr != nil {
-		log.Fatalln("Error downloading leaderboard data:", downloadErr)
-	}
+		// the website requests no more than every 15mins, but this gives us a little slop for cron jobs
+		if time.Since(time.Unix(lastRead, 0)) < time.Minute*14 {
+			log.Println("Too soon since the last request; doing nothing")
+			return
+		}
 
-	lastRead = time.Now().Unix()
-	jsonBytes, marshalErr := json.Marshal(map[string]any{"last_read": lastRead, "last_body": string(currBody)})
-	if marshalErr != nil {
-		log.Println("Failed to marshal last-read data into json:", marshalErr)
-	} else {
-		writeErr := os.WriteFile(".cache.json", jsonBytes, 0644)
-		if writeErr != nil {
-			log.Println("Failed to save cached data:", writeErr)
+		currBody, downloadErr := downloadLeaderboardData(*yearArg, leaderboardID, session)
+		if downloadErr != nil {
+			log.Println("Error downloading leaderboard data:", downloadErr)
+			return
+		}
+
+		lastRead = time.Now().Unix()
+		jsonBytes, marshalErr := json.Marshal(map[string]any{"last_read": lastRead, "last_body": string(currBody)})
+		if marshalErr != nil {
+			log.Println("Failed to marshal last-read data into json. Data:", string(jsonBytes), "- error:", marshalErr)
+		} else {
+			writeErr := os.WriteFile(".cache.json", jsonBytes, 0644)
+			if writeErr != nil {
+				log.Println("Failed to save cached data:", writeErr)
+			}
+		}
+
+		lastLeaderboard, lastLeaderboardErr := buildLeaderboard(lastBody)
+		if lastLeaderboardErr != nil {
+			log.Println("Error building leaderboard from cached body:", lastLeaderboardErr)
+			return
+		}
+		leaderboard, leaderboardErr := buildLeaderboard(currBody)
+		if leaderboardErr != nil {
+			log.Println("Error building leaderboard from downloaded body:", leaderboardErr)
+			return
+		}
+
+		for _, member := range leaderboard.Members {
+			lastMember := arrayFind(lastLeaderboard.Members, func(m memberData) bool { return m.ID == member.ID })
+			if lastMember == nil {
+				// todo: report if they've already got stars on the year
+				nErr := sendNotification(fmt.Sprintf(":tada: A new challenger has appeared! Welcome, %s, to [the leaderboard](https://adventofcode.com/%s/leaderboard/private/view/%s)! :tada:", member.Name, *yearArg, leaderboardID))
+				if nErr != nil {
+					log.Printf("Error sending new-challenger notification to the leaderboard for %s: %v\n", member.Name, nErr)
+				}
+
+				continue
+			}
+
+			for dayIdx, day := range member.CompletionDayLevel {
+				totalStars := getTotalStars(&member)
+				totalStarsPlural := "s"
+				if totalStars == 1 {
+					totalStarsPlural = ""
+				}
+
+				s := func(part *completionPartData, partNum int) {
+					completionTime := time.Unix(part.GotStarAt, 0).In(ChicagoTimeZone).Format("3:04:05pm")
+					rank := getCompletionRank(&leaderboard, &member, dayIdx, partNum) + 1
+					ordinal := getOrdinal(rank)
+					err := sendNotification(fmt.Sprintf(
+						":tada: %s completed day %d part %d %d%s on [the leaderboard](https://adventofcode.com/%s/leaderboard/private/view/%s) at %s! %s now has %d star%s on the year. :tada:",
+						member.Name,
+						dayIdx+1,
+						partNum,
+						rank,
+						ordinal,
+						*yearArg,
+						leaderboardID,
+						completionTime,
+						member.Name,
+						totalStars,
+						totalStarsPlural,
+					))
+
+					if err != nil {
+						log.Println("Error sending notification for", member, err)
+					}
+				}
+
+				// todo: probably want to batch these for delivery later so we can sort by completion rank/time
+				if day.Part1 != nil && lastMember.CompletionDayLevel[dayIdx].Part1 == nil {
+					s(day.Part1, 1)
+				}
+				if day.Part2 != nil && lastMember.CompletionDayLevel[dayIdx].Part2 == nil {
+					s(day.Part2, 2)
+				}
+			}
 		}
 	}
 
-	lastLeaderboard, lastLeaderboardErr := buildLeaderboard(lastBody)
-	if lastLeaderboardErr != nil {
-		log.Fatalln("Error building leaderboard from cached body:", lastLeaderboardErr)
-	}
-	leaderboard, leaderboardErr := buildLeaderboard(currBody)
-	if leaderboardErr != nil {
-		log.Fatalln("Error building leaderboard from downloaded body:", leaderboardErr)
-	}
+	c := cron.New()
+	c.AddFunc("*/15 * * * *", refresh)
 
-	for _, member := range leaderboard.Members {
-		lastMember := arrayFind(lastLeaderboard.Members, func(m memberData) bool { return m.ID == member.ID })
-		if lastMember == nil {
-			// todo: report if they've already got stars on the year
-			nErr := sendNotification(fmt.Sprintf("A new challenger has appeared! Welcome, %s, to [the leaderboard](https://adventofcode.com/%s/leaderboard/private/view/%s)!", member.Name, *yearArg, leaderboardID))
-			if nErr != nil {
-				log.Printf("Error sending new-challenger notification to the leaderboard for %s: %v\n", member.Name, nErr)
-			}
-
-			continue
-		}
-
-		for idx, day := range member.CompletionDayLevel {
-			totalStars := getTotalStars(&member)
-			totalStarsPlural := "s"
-			if totalStars == 1 {
-				totalStarsPlural = ""
-			}
-
-			// todo: probably want to batch these for delivery later so we can sort by completion rank/time
-			if day.Part1 != nil && lastMember.CompletionDayLevel[idx].Part1 == nil {
-				completionTime := time.Unix(day.Part1.GetStarTimestamp, 0).In(ChicagoTimeZone).Format("3:04:05pm")
-				rank := getCompletionRank(&leaderboard, &member, idx, 1) + 1
-				ordinal := getOrdinal(rank)
-				sendNotification(fmt.Sprintf(
-					"%s completed day %d part 1 %d%s on [the leaderboard](https://adventofcode.com/%s/leaderboard/private/view/%s) at %s! %s now has %d star%s on the year.",
-					member.Name,
-					idx+1,
-					rank,
-					ordinal,
-					*yearArg,
-					leaderboardID,
-					completionTime,
-					member.Name,
-					totalStars,
-					totalStarsPlural,
-				))
-			}
-			if day.Part2 != nil && lastMember.CompletionDayLevel[idx].Part2 == nil {
-				completionTime := time.Unix(day.Part2.GetStarTimestamp, 0).In(ChicagoTimeZone).Format("3:04:05pm")
-				rank := getCompletionRank(&leaderboard, &member, idx, 2) + 1
-				ordinal := getOrdinal(rank)
-				sendNotification(fmt.Sprintf(
-					"%s completed day %d part 2 %d%s on [the leaderboard](https://adventofcode.com/%s/leaderboard/private/view/%s) at %s! %s now has %d star%s on the year.",
-					member.Name,
-					idx+1,
-					rank,
-					ordinal,
-					*yearArg,
-					leaderboardID,
-					completionTime,
-					member.Name,
-					totalStars,
-					totalStarsPlural,
-				))
-			}
-		}
-	}
+	c.Start()
+	quit := make(chan os.Signal, 2)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	fmt.Println("Shutting down.")
 }
 
 func getTotalStars(member *memberData) int {
@@ -218,9 +234,9 @@ func getTotalStars(member *memberData) int {
 }
 
 func getCompletionRank(leaderboard *leaderboardData, inMember *memberData, dayIdx int, partNum int) int {
-	targetTime := inMember.CompletionDayLevel[dayIdx].Part1.GetStarTimestamp
+	targetTime := inMember.CompletionDayLevel[dayIdx].Part1.GotStarAt
 	if partNum != 1 {
-		targetTime = inMember.CompletionDayLevel[dayIdx].Part2.GetStarTimestamp
+		targetTime = inMember.CompletionDayLevel[dayIdx].Part2.GotStarAt
 	}
 
 	numAhead := 0
@@ -237,7 +253,7 @@ func getCompletionRank(leaderboard *leaderboardData, inMember *memberData, dayId
 			continue
 		}
 
-		if part.GetStarTimestamp < targetTime {
+		if part.GotStarAt < targetTime {
 			numAhead++
 		}
 	}
@@ -334,6 +350,9 @@ func sendNotification(content string) error {
 	}{
 		Text: content,
 	})
+
+	fmt.Println("Sending notification:", content)
+
 	resp, err := http.DefaultClient.Post(webhookURL.String(), "application/json", bytes.NewReader(b))
 	if err != nil {
 		return fmt.Errorf("error POSTing to webhook: %w", err)
