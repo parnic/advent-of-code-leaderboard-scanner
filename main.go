@@ -133,6 +133,8 @@ func main() {
 			return
 		}
 
+		defer func() { lastBody = currBody }()
+
 		lastRead = time.Now().Unix()
 		jsonBytes, marshalErr := json.Marshal(map[string]any{"last_read": lastRead, "last_body": string(currBody)})
 		if marshalErr != nil {
@@ -142,6 +144,10 @@ func main() {
 			if writeErr != nil {
 				log.Println("Failed to save cached data:", writeErr)
 			}
+		}
+
+		if len(lastBody) == 0 {
+			return
 		}
 
 		lastLeaderboard, lastLeaderboardErr := buildLeaderboard(lastBody)
@@ -305,7 +311,7 @@ func buildLeaderboard(body []byte) (leaderboardData, error) {
 	var leaderboard leaderboardData
 	marshalErr := json.Unmarshal(body, &leaderboard)
 	if marshalErr != nil {
-		return leaderboard, fmt.Errorf("error unmarshaling string into leaderboardData: %w", marshalErr)
+		return leaderboard, fmt.Errorf("error unmarshaling string `%s` into leaderboardData: %w", string(body), marshalErr)
 	}
 
 	jsonObj, parseErr := fastjson.ParseBytes(body)
