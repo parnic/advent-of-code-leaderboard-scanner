@@ -68,8 +68,8 @@ func main() {
 	fmt.Println("Started AOC leaderboard scanner.")
 
 	dotenvErr := godotenv.Load()
-	if dotenvErr != nil {
-		log.Fatal("Error loading .env file")
+	if dotenvErr != nil && !errors.Is(dotenvErr, os.ErrNotExist) {
+		log.Fatalln("Error loading .env file:", dotenvErr)
 	}
 
 	session := *sessionArg
