@@ -1,5 +1,5 @@
 __debug_bin*
 *.exe
-leaderboard-scanner
+advent-of-code-scanner
 /.env
 .cache.json
