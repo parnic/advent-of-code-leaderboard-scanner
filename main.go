@@ -26,6 +26,7 @@ var (
 	leaderboardArg = flag.String("leaderboard", "", "the leaderboard code to check")
 	sessionArg     = flag.String("session", "", "session cookie to use to request the leaderboard")
 	webhookURLArg  = flag.String("webhookURL", "", "webhook to post updates to")
+	daemonizeArg   = flag.Bool("d", false, "daemonizes the application to run and scan every 15 minutes")
 )
 
 var (
@@ -218,6 +219,11 @@ func main() {
 				}
 			}
 		}
+	}
+
+	if !*daemonizeArg {
+		refresh()
+		return
 	}
 
 	c := cron.New()

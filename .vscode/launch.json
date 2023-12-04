@@ -9,7 +9,15 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${fileDirname}"
+            "program": "${workspaceFolder}/main.go"
+        },
+        {
+            "name": "Launch daemonized",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/main.go",
+            "args": ["-d"]
         }
     ]
 }
